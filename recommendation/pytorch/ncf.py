@@ -142,6 +142,7 @@ def main():
     # TODO: Reading CSVs is slow. Could use HDF or Apache Arrow
     train_dataset = CFTrainDataset(
         os.path.join(args.data, TRAIN_RATINGS_FILENAME), args.negative_samples)
+    print('batchsize=%d' % args.batch_size)
     train_dataloader = torch.utils.data.DataLoader(
             dataset=train_dataset, batch_size=args.batch_size, shuffle=True,
             num_workers=8, pin_memory=True)
@@ -187,6 +188,10 @@ def main():
 
         begin = time.time()
         loader = tqdm.tqdm(train_dataloader)
+        counting_forward = 0
+        counting_zerograd = 0
+        counting_backward = 0
+        counting_updateweight = 0
         for batch_index, (user, item, label) in enumerate(loader):
             user = torch.autograd.Variable(user, requires_grad=False)
             item = torch.autograd.Variable(item, requires_grad=False)
@@ -196,13 +201,23 @@ def main():
                 item = item.cuda(async=True)
                 label = label.cuda(async=True)
 
+            start1 = time.time()
             outputs = model(user, item)
             loss = criterion(outputs, label)
             losses.update(loss.data.item(), user.size(0))
+            start2 = time.time()
 
             optimizer.zero_grad()
+            start3 = time.time()
             loss.backward()
+            start4 = time.time()
             optimizer.step()
+            start5 = time.time()
+
+            counting_forward += start2 - start1
+            counting_zerograd += start3- start2
+            counting_backward += start4- start3
+            counting_updateweight += start5- start3
 
             # Save stats to file
             description = ('Epoch {} Loss {loss.val:.4f} ({loss.avg:.4f})'
@@ -215,6 +230,9 @@ def main():
                                 use_cuda=use_cuda, output=valid_results_file,
                                 epoch=epoch)
         val_time = time.time() - begin
+        print('forward: {ft:.4f}, zerograd: {zg:.4f}, backward: {bw:.4f}, adam: {adam:.4f}'
+              .format(ft=counting_forward, zg=counting_zerograd, bw=counting_backward,
+                adam=counting_updateweight))
         print('Epoch {epoch}: HR@{K} = {hit_rate:.4f}, NDCG@{K} = {ndcg:.4f},'
               ' train_time = {train_time:.2f}, val_time = {val_time:.2f}'
               .format(epoch=epoch, K=args.topk, hit_rate=np.mean(hits),
